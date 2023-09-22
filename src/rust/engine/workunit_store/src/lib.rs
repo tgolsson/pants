@@ -115,6 +115,25 @@ impl RunningWorkunitGraph {
     }
   }
 
+  fn message(&mut self, span_id: SpanId, message: String) -> Option<()> {
+    match self.entries.entry(span_id) {
+      hash_map::Entry::Vacant(_) => {
+        log::warn!("No previously-started workunit found for id: {}", span_id);
+        None
+      }
+      hash_map::Entry::Occupied(mut entry) => {
+        let (_, _, workunit) = entry.get_mut();
+        if let Some(workunit) = workunit {
+          workunit
+            .metadata
+            .as_mut()
+            .map(|metadata| metadata.message = Some(message));
+        }
+        Some(())
+      }
+    }
+  }
+
   /// Complete a workunit, and remove it from the graph.
   ///
   /// We keep tombstone entries in the graph if they have children when they complete, in order
@@ -374,6 +393,7 @@ pub enum UserMetadataItem {
 #[derive(Clone)]
 enum StoreMsg {
   Started(Workunit),
+  Message(SpanId, String),
   Completed(SpanId, Level, Option<WorkunitMetadata>, SystemTime),
   Canceled(SpanId, SystemTime),
 }
@@ -433,7 +453,7 @@ impl StreamingWorkunitData {
             }
           }
         }
-        StoreMsg::Canceled(..) => (),
+        StoreMsg::Canceled(..) | StoreMsg::Message(..) => (),
       }
     }
 
@@ -458,6 +478,9 @@ impl HeavyHittersData {
     while let Ok(msg) = self.receiver.try_recv() {
       match msg {
         StoreMsg::Started(started) => self.running_graph.add(started),
+        StoreMsg::Message(span_id, message) => {
+          let _ = self.running_graph.message(span_id, message);
+        }
         StoreMsg::Completed(span_id, _level, new_metadata, time) => {
           let _ = self.running_graph.complete(span_id, new_metadata, time);
         }
@@ -489,7 +512,23 @@ impl HeavyHittersData {
     while let Some((Reverse(start_time), span_id)) = queue.pop() {
       let workunit = self.running_graph.get(span_id).unwrap();
       if let Some(effective_name) = workunit.metadata.as_ref().and_then(|m| m.desc.as_ref()) {
-        res.insert(workunit.span_id, (effective_name.to_string(), start_time));
+        let effective_name =
+          if let Some(m) = workunit.metadata.as_ref().and_then(|m| m.message.as_ref()) {
+            if !m.trim().is_empty() {
+              format!("{}\n{}", effective_name, m.trim())
+            } else {
+              effective_name.clone()
+            }
+          } else {
+            effective_name.clone()
+          };
+
+        let lines = effective_name
+          .lines()
+          .map(|l| l[0..80.min(l.len())].to_owned())
+          .collect::<Vec<_>>();
+
+        res.insert(workunit.span_id, (lines.join("\n\t"), start_time));
         if res.len() >= k {
           break;
         }
@@ -651,6 +690,11 @@ impl WorkunitStore {
       started.log_workunit_state(false)
     }
     started
+  }
+
+  fn message_workunit(&self, workunit: &Workunit, message: &str) {
+    let span_id = workunit.span_id;
+    self.send(StoreMsg::Message(span_id, message.to_string()));
   }
 
   fn complete_workunit(&self, workunit: Workunit) {
@@ -882,6 +926,19 @@ macro_rules! in_workunit {
   }};
 }
 
+pub struct MessageSender {
+  store: WorkunitStore,
+  workunit: Option<Workunit>,
+}
+
+impl MessageSender {
+  pub fn message(&mut self, message: &str) {
+    if let Some(workunit) = self.workunit.as_mut() {
+      self.store.message_workunit(workunit, message);
+    }
+  }
+}
+
 pub struct RunningWorkunit {
   store: WorkunitStore,
   workunit: Option<Workunit>,
@@ -901,6 +958,13 @@ impl RunningWorkunit {
 
   pub fn increment_counter(&mut self, counter_name: Metric, change: u64) {
     self.store.increment_counter(counter_name, change);
+  }
+
+  pub fn message_sender(&self) -> Option<MessageSender> {
+    self.workunit.as_ref().map(|w| MessageSender {
+      workunit: Some(w.clone()),
+      store: self.store.clone(),
+    })
   }
 
   ///

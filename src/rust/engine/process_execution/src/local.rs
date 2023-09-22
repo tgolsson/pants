@@ -177,6 +177,38 @@ pub async fn collect_child_outputs<'a, 'b>(
   Ok(exit_code)
 }
 
+///
+/// Collect the outputs of a child process.
+///
+pub async fn collect_child_outputs_w2<'a, 'b>(
+  mut sender: Option<workunit_store::MessageSender>,
+  stdout: &'a mut BytesMut,
+  stderr: &'a mut BytesMut,
+  mut stream: BoxStream<'b, Result<ChildOutput, String>>,
+) -> Result<i32, String> {
+  let mut exit_code = 1;
+
+  while let Some(child_output_res) = stream.next().await {
+    match child_output_res? {
+      ChildOutput::Stdout(bytes) => {
+        if let Some(sender) = sender.as_mut() {
+          sender.message(&str::from_utf8(&bytes).unwrap_or_default().trim());
+        }
+        stdout.extend_from_slice(&bytes)
+      }
+      ChildOutput::Stderr(bytes) => {
+        if let Some(sender) = sender.as_mut() {
+          sender.message(&str::from_utf8(&bytes).unwrap_or_default().trim());
+        }
+        stderr.extend_from_slice(&bytes)
+      }
+      ChildOutput::Exit(code) => exit_code = code.0,
+    };
+  }
+
+  Ok(exit_code)
+}
+
 #[async_trait]
 impl super::CommandRunner for CommandRunner {
   ///
@@ -236,6 +268,7 @@ impl super::CommandRunner for CommandRunner {
             workdir.path().to_owned(),
             (),
             exclusive_spawn,
+            workunit.message_sender(),
           )
           .map_err(|msg| {
             // Processes that experience no infrastructure issues should result in an "Ok" return,
@@ -412,6 +445,7 @@ pub trait CapturedWorkdir {
     workdir_path: PathBuf,
     workdir_token: Self::WorkdirToken,
     exclusive_spawn: bool,
+    sender: Option<workunit_store::MessageSender>,
   ) -> Result<FallibleProcessResultWithPlatform, String> {
     let start_time = Instant::now();
     let mut stdout = BytesMut::with_capacity(8192);
@@ -423,7 +457,8 @@ pub trait CapturedWorkdir {
     // process results to console logs, etc.
     let exit_code_result = {
       let workdir_token = workdir_token.clone();
-      let exit_code_future = collect_child_outputs(
+      let exit_code_future = collect_child_outputs_w2(
+        sender,
         &mut stdout,
         &mut stderr,
         self

@@ -27,9 +27,8 @@
 
 use futures::future::{self, BoxFuture, FutureExt};
 use indexmap::IndexSet;
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, WeakProgressBar};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, WeakProgressBar};
 use parking_lot::Mutex;
-use std::cmp;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
@@ -264,7 +263,9 @@ impl Instance {
             // We can safely unwrap here because the Mutex is held until the bar is initialized.
             stderr_dest_bar.as_ref().unwrap().upgrade().ok_or(())?
           };
-          dest_bar.println(msg);
+          if false {
+            dest_bar.println(msg)
+          };
           Ok(())
         }))?
       };
@@ -277,15 +278,10 @@ impl Instance {
       );
       // NB: We render more frequently than we receive new data in order to minimize aliasing where a
       // render might barely miss a data refresh.
-      let draw_target = ProgressDrawTarget::term(term, ConsoleUI::render_rate_hz() * 2);
+      let draw_target = ProgressDrawTarget::term(term, ConsoleUI::render_rate_hz());
       let multi_progress = MultiProgress::with_draw_target(draw_target);
-      let bars = (0..cmp::min(local_parallelism, terminal_height.into()))
-        .map(|_n| {
-          let style = ProgressStyle::default_bar()
-            .template("{spinner} {wide_msg}")
-            .expect("Valid template.");
-          multi_progress.add(ProgressBar::new(terminal_width.into()).with_style(style))
-        })
+      let bars = (0..5)
+        .map(|_n| multi_progress.add(ProgressBar::new_spinner()))
         .collect::<Vec<_>>();
       *stderr_dest_bar_guard = Some(bars[0].downgrade());
 
@@ -335,14 +331,15 @@ impl Instance {
         );
 
         let now = SystemTime::now();
-        for (n, pbar) in indicatif.bars.iter().enumerate() {
+        for (n, pbar) in indicatif.bars.iter().enumerate().skip(1) {
           let maybe_label = tasks_to_display.get_index(n).map(|span_id| {
             let (label, start_time) = heavy_hitters.get(span_id).unwrap();
             let duration_label = match now.duration_since(*start_time).ok() {
               None => "(Waiting)".to_string(),
               Some(duration) => format_workunit_duration_ms!((duration).as_millis()).to_string(),
             };
-            format!("{duration_label} {label}")
+
+            format!("{duration_label} {label}",)
           });
 
           match maybe_label {

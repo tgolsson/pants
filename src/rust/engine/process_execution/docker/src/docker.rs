@@ -489,6 +489,7 @@ impl<'a> process_execution::CommandRunner for CommandRunner<'a> {
             workdir.path().to_owned(),
             (container_id, working_dir),
             exclusive_spawn,
+            None,
           )
           .map_err(|msg| {
             // Processes that experience no infrastructure issues should result in an "Ok" return,
