@@ -258,6 +258,9 @@ impl Instance {
           // Acquire a handle to the destination bar in the UI. If we fail to upgrade, it's because
           // the UI has shut down: we fail the callback to have the logging module directly log to
           // stderr at that point.
+          if true {
+            return Ok(());
+          }
           let dest_bar = {
             let stderr_dest_bar = stderr_dest_bar.lock();
             // We can safely unwrap here because the Mutex is held until the bar is initialized.
@@ -278,12 +281,21 @@ impl Instance {
       );
       // NB: We render more frequently than we receive new data in order to minimize aliasing where a
       // render might barely miss a data refresh.
-      let draw_target = ProgressDrawTarget::term(term, ConsoleUI::render_rate_hz());
+      let draw_target = ProgressDrawTarget::term(term, 30);
       let multi_progress = MultiProgress::with_draw_target(draw_target);
       let bars = (0..5)
-        .map(|_n| multi_progress.add(ProgressBar::new_spinner()))
+        .map(|_n| {
+          let style = indicatif::ProgressStyle::default_spinner()
+            .template("{spinner} {prefix:.bold.dim}{wide_msg}")
+            .expect("Valid template.");
+
+          let pb = multi_progress.add(ProgressBar::new(80).with_style(style));
+          pb.set_prefix("");
+          pb.set_message("");
+          pb
+        })
         .collect::<Vec<_>>();
-      *stderr_dest_bar_guard = Some(bars[0].downgrade());
+      *stderr_dest_bar_guard = None; // Some(bars[0].downgrade());
 
       Ok(Instance::Indicatif(IndicatifInstance {
         tasks_to_display: IndexSet::new(),
@@ -293,7 +305,7 @@ impl Instance {
     };
   }
 
-  pub fn render(&mut self, heavy_hitters: &HashMap<SpanId, (String, SystemTime)>) {
+  pub fn render(&mut self, heavy_hitters: &HashMap<SpanId, (String, Option<String>, SystemTime)>) {
     let classify_tasks = |mut current_ids: HashSet<SpanId>,
                           handler: &mut dyn FnMut(SpanId, TaskState)| {
       for span_id in heavy_hitters.keys() {
@@ -331,24 +343,31 @@ impl Instance {
         );
 
         let now = SystemTime::now();
-        for (n, pbar) in indicatif.bars.iter().enumerate().skip(1) {
-          let maybe_label = tasks_to_display.get_index(n).map(|span_id| {
-            let (label, start_time) = heavy_hitters.get(span_id).unwrap();
-            let duration_label = match now.duration_since(*start_time).ok() {
-              None => "(Waiting)".to_string(),
-              Some(duration) => format_workunit_duration_ms!((duration).as_millis()).to_string(),
-            };
+        for (n, pbar) in indicatif.bars.iter().enumerate() {
+          let (maybe_label, maybe_log) = tasks_to_display
+            .get_index(n)
+            .map(|span_id| {
+              let (label, maybe_log, start_time) = heavy_hitters.get(span_id).unwrap();
+              let duration_label = match now.duration_since(*start_time).ok() {
+                None => "(Waiting)".to_string(),
+                Some(duration) => format_workunit_duration_ms!((duration).as_millis()).to_string(),
+              };
 
-            format!("{duration_label} {label}",)
-          });
+              (format!("{duration_label} {label}",), maybe_log.as_ref())
+            })
+            .unzip();
 
           match maybe_label {
-            Some(label) => pbar.set_message(label),
-            None => pbar.set_message(""),
+            Some(label) => pbar.set_prefix(label[0..80.min(label.len())].to_owned()),
+            None => pbar.set_prefix(""),
+          }
+
+          match maybe_log.flatten() {
+            Some(_log) => pbar.set_message(format!("\nfoobar")),
+            None => pbar.set_message("\n"),
           }
           // TODO: See https://github.com/console-rs/indicatif/pull/417#issuecomment-1202773191
           // Can be removed once we upgrade past `0.17.0`.
-          pbar.tick();
         }
       }
       Instance::Prodash(prodash) => {
@@ -364,7 +383,7 @@ impl Instance {
               tasks_to_display.get_mut(&span_id).unwrap().inc();
             }
             TaskState::New => {
-              let (desc, start_time) = heavy_hitters.get(&span_id).unwrap();
+              let (desc, _, start_time) = heavy_hitters.get(&span_id).unwrap();
               // NB: Allow a 8 char "buffer" to allow for timing and spaces.
               let max_len = (prodash.terminal_width as usize) - 8;
               let description: String = if desc.len() < max_len {

@@ -39,7 +39,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use concrete_time::TimeSpan;
 use deepsize::DeepSizeOf;
 use hdrhistogram::serialization::Serializer;
-use log::log;
+
 pub use log::Level;
 pub use metrics::{Metric, ObservationMetric};
 use parking_lot::Mutex;
@@ -289,46 +289,46 @@ impl Workunit {
     }
   }
 
-  fn log_workunit_state(&self, canceled: bool) {
-    let metadata = match self.metadata.as_ref() {
-      Some(metadata) if log::log_enabled!(self.level) => metadata,
-      _ => return,
-    };
+  fn log_workunit_state(&self, _canceled: bool) {
+    // let metadata = match self.metadata.as_ref() {
+    //   Some(metadata) if log::log_enabled!(self.level) => metadata,
+    //   _ => return,
+    // };
 
-    let state = match (&self.state, canceled) {
-      (_, true) => "Canceled:",
-      (WorkunitState::Started { .. }, _) => "Starting:",
-      (WorkunitState::Completed { .. }, _) => "Completed:",
-    };
+    // let state = match (&self.state, canceled) {
+    //   (_, true) => "Canceled:",
+    //   (WorkunitState::Started { .. }, _) => "Starting:",
+    //   (WorkunitState::Completed { .. }, _) => "Completed:",
+    // };
 
-    let identifier = if let Some(ref s) = metadata.desc {
-      s.as_str()
-    } else {
-      self.name
-    };
+    // let identifier = if let Some(ref s) = metadata.desc {
+    //   s.as_str()
+    // } else {
+    //   self.name
+    // };
 
-    /* This length calculation doesn't treat multi-byte unicode charcters identically
-     * to single-byte ones for the purpose of figuring out where to truncate the string. But that's
-     * ok, since we just want to truncate the log string if it's roughly "too long", we don't care
-     * exactly what the max_len is or whether it effectively changes slightly if there are
-     * multibyte unicode characters in the string
-     */
-    let max_len = 200;
-    let effective_identifier = if identifier.len() > max_len {
-      let truncated_identifier: String = identifier.chars().take(max_len).collect();
-      let trunc = identifier.len() - max_len;
-      format!("{truncated_identifier}... ({trunc} characters truncated)")
-    } else {
-      identifier.to_string()
-    };
+    // /* This length calculation doesn't treat multi-byte unicode charcters identically
+    //  * to single-byte ones for the purpose of figuring out where to truncate the string. But that's
+    //  * ok, since we just want to truncate the log string if it's roughly "too long", we don't care
+    //  * exactly what the max_len is or whether it effectively changes slightly if there are
+    //  * multibyte unicode characters in the string
+    //  */
+    // let max_len = 200;
+    // let effective_identifier = if identifier.len() > max_len {
+    //   let truncated_identifier: String = identifier.chars().take(max_len).collect();
+    //   let trunc = identifier.len() - max_len;
+    //   format!("{truncated_identifier}... ({trunc} characters truncated)")
+    // } else {
+    //   identifier.to_string()
+    // };
 
-    let message = if let Some(ref s) = metadata.message {
-      format!(" - {s}")
-    } else {
-      "".to_string()
-    };
+    // let message = if let Some(ref s) = metadata.message {
+    //   format!(" - {s}")
+    // } else {
+    //   "".to_string()
+    // };
 
-    log!(self.level, "{} {}{}", state, effective_identifier, message);
+    // log!(self.level, "{} {}{}", state, effective_identifier, message);
   }
 }
 
@@ -491,7 +491,7 @@ impl HeavyHittersData {
     }
   }
 
-  fn heavy_hitters(&mut self, k: usize) -> HashMap<SpanId, (String, SystemTime)> {
+  fn heavy_hitters(&mut self, k: usize) -> HashMap<SpanId, (String, Option<String>, SystemTime)> {
     self.refresh_store();
 
     // Initialize the heap with the visible parents of the leaves of the running workunit graph,
@@ -512,23 +512,20 @@ impl HeavyHittersData {
     while let Some((Reverse(start_time), span_id)) = queue.pop() {
       let workunit = self.running_graph.get(span_id).unwrap();
       if let Some(effective_name) = workunit.metadata.as_ref().and_then(|m| m.desc.as_ref()) {
-        let effective_name =
-          if let Some(m) = workunit.metadata.as_ref().and_then(|m| m.message.as_ref()) {
-            if !m.trim().is_empty() {
-              format!("{}\n{}", effective_name, m.trim())
-            } else {
-              effective_name.clone()
-            }
-          } else {
-            effective_name.clone()
-          };
+        let effective_name = effective_name.clone();
 
-        let lines = effective_name
-          .lines()
-          .map(|l| l[0..80.min(l.len())].to_owned())
-          .collect::<Vec<_>>();
+        let log = if let Some(ref s) = workunit.metadata.as_ref().and_then(|m| m.message.as_ref()) {
+          let lines = s
+            .lines()
+            .map(|l| l[0..80.min(l.len())].to_owned())
+            .collect::<Vec<_>>();
 
-        res.insert(workunit.span_id, (lines.join("\n\t"), start_time));
+          Some(lines.join("\n\t"))
+        } else {
+          None
+        };
+
+        res.insert(workunit.span_id, (effective_name, log, start_time));
         if res.len() >= k {
           break;
         }
@@ -644,7 +641,7 @@ impl WorkunitStore {
   /// Find the longest running leaf workunits, and return the description and start time of their
   /// first visible parents.
   ///
-  pub fn heavy_hitters(&self, k: usize) -> HashMap<SpanId, (String, SystemTime)> {
+  pub fn heavy_hitters(&self, k: usize) -> HashMap<SpanId, (String, Option<String>, SystemTime)> {
     self.heavy_hitters_data.lock().heavy_hitters(k)
   }
 

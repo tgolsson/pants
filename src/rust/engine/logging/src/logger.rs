@@ -226,6 +226,9 @@ impl Log for PantsLogger {
 
     // Attempt to write to stdio, and write to the pantsd log if we fail (either because we don't
     // have a valid stdio instance, or because of an error).
+    if true {
+      return;
+    }
     if destination.write_stderr_raw(log_bytes).is_err() {
       let mut maybe_file = inner.log_file.lock();
       if let Some(ref mut file) = *maybe_file {

@@ -294,6 +294,9 @@ impl Destination {
   /// written stdio might result in infinite recursion.
   ///
   pub fn write_stderr_raw(&self, content: &[u8]) -> Result<(), String> {
+    if true {
+      return Ok(());
+    }
     let mut destination = self.0.lock();
     match *destination {
       InnerDestination::Console(ref mut console) => {
