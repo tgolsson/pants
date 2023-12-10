@@ -371,6 +371,7 @@ pub enum UserMetadataItem {
 #[derive(Clone)]
 enum StoreMsg {
     Started(Workunit),
+    LogLine(SpanId, String),
     Completed(SpanId, Level, Option<WorkunitMetadata>, SystemTime),
     Canceled(SpanId, SystemTime),
 }
@@ -435,7 +436,7 @@ impl StreamingWorkunitData {
                         }
                     }
                 }
-                StoreMsg::Canceled(..) => (),
+                StoreMsg::Canceled(..) | StoreMsg::LogLine(..) => (),
             }
         }
 
