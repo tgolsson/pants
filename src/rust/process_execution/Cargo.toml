@@ -38,7 +38,7 @@ tokio = { workspace = true, features = ["net", "process", "rt-multi-thread", "sy
 tokio-rustls = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
-uname = { workspace = true }
+
 uuid = { workspace = true, features = ["v4"] }
 workunit_store = { path = "../workunit_store" }
 regex = { workspace = true }
@@ -57,6 +57,9 @@ strum_macros = { workspace = true }
 tonic = { workspace = true, features = ["transport", "codegen", "tls", "tls-roots", "prost"] }
 tower = { workspace = true }
 tryfuture = { path = "../tryfuture" }
+
+[target.'cfg(unix)'.dependencies]
+uname = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
