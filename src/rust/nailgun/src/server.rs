@@ -5,8 +5,13 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io;
 use std::net::Ipv4Addr;
+#[cfg(not(target_os = "windows"))]
 use std::os::fd::OwnedFd;
+#[cfg(not(target_os = "windows"))]
 use std::os::unix::io::{AsRawFd, RawFd};
+#[cfg(target_os = "windows")]
+use std::os::windows::io::{AsRawHandle, RawHandle, FromRawHandle};
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -22,6 +27,11 @@ use tokio::fs::File;
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, RwLock, mpsc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
+
+#[cfg(not(target_os = "windows"))]
+type FileishHandle = RawFd;
+#[cfg(target_os = "windows")]
+type FileishHandle = RawHandle;
 
 pub struct Server {
     exit_sender: oneshot::Sender<()>,
@@ -174,9 +184,9 @@ impl Server {
 pub struct RawFdExecution {
     pub cmd: execution::Command,
     pub cancelled: AsyncLatch,
-    pub stdin_fd: RawFd,
-    pub stdout_fd: RawFd,
-    pub stderr_fd: RawFd,
+    pub stdin_fd: FileishHandle,
+    pub stdout_fd: FileishHandle,
+    pub stderr_fd: FileishHandle,
 }
 
 ///
@@ -246,13 +256,23 @@ impl Nail for RawFdNail {
             .spawn_blocking(
                 move || {
                     // NB: This closure captures the stdio handles, and will drop/close them when it completes.
-                    (nail.runner)(RawFdExecution {
+					#[cfg(not(target_os = "windows"))]
+                    let res =(nail.runner)(RawFdExecution {
                         cmd,
                         cancelled,
                         stdin_fd: stdin_handle.as_raw_fd(),
                         stdout_fd: stdout_handle.as_raw_fd(),
                         stderr_fd: stderr_handle.as_raw_fd(),
-                    })
+                    });
+				    #[cfg(target_os = "windows")]
+                    let res = (nail.runner)(RawFdExecution {
+                        cmd,
+                        cancelled,
+                        stdin_fd: stdin_handle.as_raw_handle(),
+                        stdout_fd: stdout_handle.as_raw_handle(),
+                        stderr_fd: stderr_handle.as_raw_handle(),
+                    });
+					res
                 },
                 |e| {
                     log::warn!("Server exited uncleanly: {e}");
@@ -275,6 +295,40 @@ impl Nail for RawFdNail {
     }
 }
 
+
+impl RawFdNail {
+
+    ///
+    /// Attempt to open the given TTY-path, logging any errors.
+    ///
+    fn try_open_tty(
+        tty_path: Option<PathBuf>,
+        open_options: &OpenOptions,
+    ) -> Option<std::fs::File> {
+        let tty_path = tty_path?;
+        open_options
+            .open(&tty_path)
+            .map_err(|e| {
+                log::debug!(
+                    "Failed to open TTY at {}: {:?}, falling back to socket access.",
+                    tty_path.display(),
+                    e
+                );
+            })
+            .ok()
+    }
+
+    ///
+    /// Corresponds to `ttynames_to_env` in `nailgun_protocol.py`. See this struct's rustdocs.
+    ///
+    fn ttypath_from_env(env: &HashMap<String, String>, fd_number: usize) -> Option<PathBuf> {
+        env.get(&format!("NAILGUN_TTY_PATH_{fd_number}"))
+            .map(PathBuf::from)
+    }
+}
+
+
+#[cfg(not(target_os = "windows"))]
 impl RawFdNail {
     ///
     /// Returns a tuple of a readable file handle and an optional sink for nails to send stdin to.
@@ -295,8 +349,7 @@ impl RawFdNail {
         }
     }
 
-    ///
-    /// Returns a tuple of a possibly empty Stream for nails to read data from, and a writable file handle.
+	    /// Returns a tuple of a possibly empty Stream for nails to read data from, and a writable file handle.
     ///
     /// See `Self::input` and the struct's rustdoc for more info on the TTY case.
     ///
@@ -328,35 +381,65 @@ impl RawFdNail {
             ))
         }
     }
-
-    ///
-    /// Attempt to open the given TTY-path, logging any errors.
-    ///
-    fn try_open_tty(
-        tty_path: Option<PathBuf>,
-        open_options: &OpenOptions,
-    ) -> Option<std::fs::File> {
-        let tty_path = tty_path?;
-        open_options
-            .open(&tty_path)
-            .map_err(|e| {
-                log::debug!(
-                    "Failed to open TTY at {}: {:?}, falling back to socket access.",
-                    tty_path.display(),
-                    e
-                );
-            })
-            .ok()
-    }
-
-    ///
-    /// Corresponds to `ttynames_to_env` in `nailgun_protocol.py`. See this struct's rustdocs.
-    ///
-    fn ttypath_from_env(env: &HashMap<String, String>, fd_number: usize) -> Option<PathBuf> {
-        env.get(&format!("NAILGUN_TTY_PATH_{fd_number}"))
-            .map(PathBuf::from)
-    }
 }
+
+
+#[cfg(target_os = "windows")]
+impl RawFdNail {
+    ///
+    /// Returns a tuple of a readable file handle and an optional sink for nails to send stdin to.
+    ///
+    /// In the case of a TTY, the file handle will point directly to the TTY, and no stdin data will
+    /// flow over the protocol. Otherwise, it will be backed by a new anonymous pipe, and data should
+    /// be copied to the returned Sink.
+    ///
+    fn input(
+        tty_path: Option<PathBuf>,
+    ) -> Result<(Box<dyn AsRawHandle + Send>, Option<impl sink::Sink<Bytes>>), io::Error> {
+        if let Some(tty) = Self::try_open_tty(tty_path, OpenOptions::new().read(true)) {
+            Ok((Box::new(tty), None))
+        } else {
+            let (pipe_reader, pipe_writer) = os_pipe::pipe()?;
+            let write_handle = File::from_std(unsafe {std::fs::File::from_raw_handle(pipe_writer.as_raw_handle())});
+            Ok((Box::new(pipe_reader), Some(sink_for(write_handle))))
+        }
+    }
+
+	    /// Returns a tuple of a possibly empty Stream for nails to read data from, and a writable file handle.
+    ///
+    /// See `Self::input` and the struct's rustdoc for more info on the TTY case.
+    ///
+    #[allow(clippy::type_complexity)]
+    fn output(
+        tty_path: Option<PathBuf>,
+        read_write: bool,
+    ) -> Result<
+        (
+            stream::BoxStream<'static, Result<Bytes, io::Error>>,
+            Box<dyn AsRawHandle + Send>,
+        ),
+        io::Error,
+    > {
+        if let Some(tty) = Self::try_open_tty(
+            tty_path,
+            OpenOptions::new()
+                .read(read_write)
+                .write(true)
+                .create(false),
+        ) {
+            Ok((stream::empty().boxed(), Box::new(tty)))
+        } else {
+            let (pipe_reader, pipe_writer) = os_pipe::pipe()?;
+            let read_handle = unsafe {std::fs::File::from_raw_handle(pipe_reader.as_raw_handle())};
+            Ok((
+                blocking_stream_for(read_handle)?.boxed(),
+                Box::new(pipe_writer),
+            ))
+        }
+    }
+
+}
+
 
 // TODO: See https://github.com/pantsbuild/pants/issues/16969.
 pub fn blocking_stream_for<R: io::Read + Send + Sized + 'static>(

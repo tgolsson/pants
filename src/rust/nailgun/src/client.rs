@@ -10,7 +10,10 @@ use nails::Config;
 use nails::execution::{ChildInput, ChildOutput, ExitCode, stream_for};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+#[cfg(not(target_os = "windows"))]
 use tokio::signal::unix::{Signal, SignalKind, signal};
+#[cfg(target_os = "windows")]
+use tokio::signal::windows;
 
 pub enum NailgunClientError {
     PreConnect(String),
@@ -31,7 +34,10 @@ fn handle_postconnect_stdio(err: io::Error, msg: &str) -> NailgunClientError {
 
 async fn handle_client_output(
     mut stdio_read: impl Stream<Item = ChildOutput> + Unpin,
+	#[cfg(not(target_os = "windows"))]
     mut signal_stream: Signal,
+	#[cfg(target_os = "windows")]
+	mut signal_stream: windows::CtrlBreak,
     child: &mut nails::client::Child,
 ) -> Result<(), NailgunClientError> {
     let mut stdout = tokio::io::stdout();
@@ -111,7 +117,12 @@ pub async fn client_execute(
         working_dir,
     };
 
+	#[cfg(not(target_os = "windows"))]
     let signal_stream = signal(SignalKind::interrupt()).map_err(|err| {
+        NailgunClientError::PreConnect(format!("Failed to install interrupt handler: {err}"))
+    })?;
+	#[cfg(target_os = "windows")]
+	let signal_stream = windows::ctrl_break().map_err(|err| {
         NailgunClientError::PreConnect(format!("Failed to install interrupt handler: {err}"))
     })?;
     let socket = TcpStream::connect((Ipv4Addr::new(127, 0, 0, 1), port))
