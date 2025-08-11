@@ -177,7 +177,8 @@ log = "0.4.26"
 maplit = "1.0.1"
 nails = { path = "../rust-vendor/nails/nails" }
 nix = "0.25"
-notify = { git = "https://github.com/pantsbuild/notify", rev = "276af0f3c5f300bfd534941386ba2f3b3a022df7" }
+# notify = { git = "https://github.com/pantsbuild/notify", rev = "276af0f3c5f300bfd534941386ba2f3b3a022df7" }
+notify = { path = "../rust-vendor/notify" }
 num_cpus = "1"
 num_enum = "0.5"
 once_cell = "1.20"
