@@ -6,18 +6,25 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::time::SystemTime;
 use task_executor::Executor;
-use terminal_size::terminal_size_using_fd;
+#[cfg(not(target_os = "windows"))]
+use terminal_size::terminal_size_using_fd as terminal_size;
+#[cfg(target_os = "windows")]
+use terminal_size::terminal_size_using_handle as terminal_size;
+
 use workunit_store::SpanId;
 
 mod indicatif;
+#[cfg(feature = "prodash")]
 mod prodash;
 
 use self::indicatif::IndicatifInstance;
+#[cfg(feature = "prodash")]
 use self::prodash::ProdashInstance;
 
 /// The state for one run of the ConsoleUI.
 pub(super) enum Instance {
     Indicatif(IndicatifInstance),
+    #[cfg(feature = "prodash")]
     Prodash(ProdashInstance),
 }
 
@@ -40,24 +47,26 @@ impl Instance {
         local_parallelism: usize,
         executor: Executor,
     ) -> Result<Instance, String> {
+        #[cfg(not(target_os = "windows"))]
         let stderr_fd = stdio::get_destination().stderr_as_raw_fd()?;
-        let (terminal_width, terminal_height) = terminal_size_using_fd(stderr_fd)
-            .map(|terminal_dimensions| (terminal_dimensions.0.0, terminal_dimensions.1.0 - 1))
+        #[cfg(target_os = "windows")]
+        let stderr_fd = stdio::get_destination().stderr_as_raw_handle()?;
+        let (terminal_width, terminal_height) = terminal_size(stderr_fd)
+            .map(|terminal_dimensions| (terminal_dimensions.0 .0, terminal_dimensions.1 .0 - 1))
             .unwrap_or((50, local_parallelism.try_into().unwrap()));
 
         if ui_use_prodash {
+            #[cfg(feature = "prodash")]
             let instance =
                 prodash::ProdashInstance::new(executor.clone(), terminal_width, terminal_height)?;
-            Ok(Instance::Prodash(instance))
-        } else {
-            let instance = indicatif::IndicatifInstance::new(
-                local_parallelism,
-                terminal_width,
-                terminal_height,
-            )?;
-
-            Ok(Instance::Indicatif(instance))
+            #[cfg(feature = "prodash")]
+            return Ok(Instance::Prodash(instance));
         }
+
+        let instance =
+            indicatif::IndicatifInstance::new(local_parallelism, terminal_width, terminal_height)?;
+
+        Ok(Instance::Indicatif(instance))
     }
 
     ///
@@ -66,6 +75,7 @@ impl Instance {
     pub fn render(&mut self, heavy_hitters: &HashMap<SpanId, (String, SystemTime)>) {
         match self {
             Instance::Indicatif(indicatif) => indicatif.render(heavy_hitters),
+            #[cfg(feature = "prodash")]
             Instance::Prodash(prodash) => prodash.render(heavy_hitters),
         };
     }
@@ -76,6 +86,7 @@ impl Instance {
     pub fn teardown(self) -> BoxFuture<'static, ()> {
         match self {
             Instance::Indicatif(indicatif) => indicatif.teardown(),
+            #[cfg(feature = "prodash")]
             Instance::Prodash(prodash) => prodash.teardown(),
         }
     }

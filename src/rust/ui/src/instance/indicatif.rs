@@ -7,8 +7,8 @@ use std::future;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use futures::FutureExt;
 use futures::future::BoxFuture;
+use futures::FutureExt;
 use indexmap::IndexSet;
 use indicatif::MultiProgress;
 use indicatif::ProgressBar;
@@ -17,8 +17,8 @@ use indicatif::ProgressStyle;
 use indicatif::WeakProgressBar;
 use parking_lot::Mutex;
 
-use workunit_store::SpanId;
 use workunit_store::format_workunit_duration_ms;
+use workunit_store::SpanId;
 
 use super::TaskState;
 use crate::ConsoleUI;
@@ -118,27 +118,34 @@ impl IndicatifInstance {
 fn setup_bar_outputs(
     stderr_dest_bar: Arc<Mutex<Option<WeakProgressBar>>>,
 ) -> Result<MultiProgress, String> {
-    let (term_read, _, term_stderr_write) = {
-        let stderr_dest_bar = stderr_dest_bar.clone();
-        stdio::get_destination().exclusive_start(Box::new(move |msg: &str| {
-            // Acquire a handle to the destination bar in the UI. If we fail to upgrade, it's because
-            // the UI has shut down: we fail the callback to have the logging module directly log to
-            // stderr at that point.
-            let dest_bar = {
-                let stderr_dest_bar = stderr_dest_bar.lock();
-                // We can safely unwrap here because the Mutex is held until the bar is initialized.
-                stderr_dest_bar.as_ref().unwrap().upgrade().ok_or(())?
-            };
-            dest_bar.println(msg);
-            Ok(())
-        }))?
+    #[cfg(not(target_os = "windows"))]
+    let term = {
+        let (term_read, _, term_stderr_write) = {
+            let stderr_dest_bar = stderr_dest_bar.clone();
+            stdio::get_destination().exclusive_start(Box::new(move |msg: &str| {
+                // Acquire a handle to the destination bar in the UI. If we fail to upgrade, it's because
+                // the UI has shut down: we fail the callback to have the logging module directly log to
+                // stderr at that point.
+                let dest_bar = {
+                    let stderr_dest_bar = stderr_dest_bar.lock();
+                    // We can safely unwrap here because the Mutex is held until the bar is initialized.
+                    stderr_dest_bar.as_ref().unwrap().upgrade().ok_or(())?
+                };
+                dest_bar.println(msg);
+                Ok(())
+            }))?
+        };
+
+        let stderr_use_color = term_stderr_write.use_color;
+        let term = console::Term::read_write_pair_with_style(
+            term_read,
+            term_stderr_write,
+            console::Style::new().force_styling(stderr_use_color),
+        );
     };
-    let stderr_use_color = term_stderr_write.use_color;
-    let term = console::Term::read_write_pair_with_style(
-        term_read,
-        term_stderr_write,
-        console::Style::new().force_styling(stderr_use_color),
-    );
+
+    #[cfg(target_os = "windows")]
+    let term = console::Term::stderr(); // TODO[tsolberg]: This is wrong
     let draw_target = ProgressDrawTarget::term(term, ConsoleUI::render_rate_hz() * 2);
     let multi_progress = MultiProgress::with_draw_target(draw_target);
     Ok(multi_progress)

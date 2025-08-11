@@ -1,5 +1,6 @@
 // Copyright 2020 Pants project contributors (see CONTRIBUTORS.md).
 // Licensed under the Apache License, Version 2.0 (see LICENSE).
+#![allow(unused_variables)]
 
 use futures::future::BoxFuture;
 use futures::future::FutureExt;

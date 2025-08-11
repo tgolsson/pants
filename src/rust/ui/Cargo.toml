@@ -12,7 +12,7 @@ indicatif = { workspace = true }
 logging = { path = "../logging" }
 parking_lot = { workspace = true }
 # TODO: See https://github.com/Byron/prodash/pull/9.
-prodash = { workspace = true }
+prodash = { workspace = true, optional = true }
 stdio = { path = "../stdio" }
 terminal_size = { workspace = true }
 task_executor = { path = "../task_executor" }
