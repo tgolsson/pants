@@ -8,12 +8,19 @@ mod pantsd_tests;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(not(target_os = "windows"))]
 use libc::pid_t;
+#[cfg(target_os = "windows")]
+use sysinfo::Pid as pid_t;
+
 use log::debug;
-use options::{BuildRoot, OptionId, OptionParser, OptionType, option_id};
+use options::{option_id, BuildRoot, OptionId, OptionParser, OptionType};
 use sha2::digest::Update;
 use sha2::{Digest, Sha256};
-use sysinfo::{ProcessExt, ProcessStatus, System, SystemExt};
+
+#[cfg(not(target_os = "windows"))]
+use sysinfo::{ProcessExt, SystemExt};
+use sysinfo::{ProcessStatus, System};
 
 pub struct ConnectionSettings {
     pub port: u16,
@@ -37,13 +44,17 @@ pub(crate) struct Metadata {
 
 impl Metadata {
     pub(crate) fn mount<P: AsRef<Path>>(directory: P) -> Result<Metadata, String> {
+        #[cfg(not(target_os = "windows"))]
         let info = uname::uname().map_err(|e| format!("{e}"))?;
+        // TODO[TSolberg]: Handle this on Windows without huge dependency cost.
+
+        let _s = System::new_all();
         let host_hash = Sha256::new()
-            .chain(&info.sysname)
-            .chain(&info.nodename)
-            .chain(&info.release)
-            .chain(&info.version)
-            .chain(&info.machine)
+            .chain(System::host_name().unwrap())
+            // .chain(&info.nodename)
+            // .chain(&info.release)
+            // .chain(&info.version)
+            // .chain(&info.machine)
             .finalize();
 
         const HOST_FINGERPRINT_LENGTH: usize = 6;
@@ -217,7 +228,15 @@ pub(crate) fn probe(
 
     let pid = pantsd_metadata.pid()?;
     let mut system = System::new();
+    #[cfg(not(target_os = "windows"))]
     system.refresh_process(pid);
+
+    #[cfg(target_os = "windows")]
+    {
+        let pids = &[pid];
+        let refreshers = sysinfo::ProcessesToUpdate::Some(pids);
+        system.refresh_processes(refreshers, true);
+    }
     // Check that the recorded pid is a live process.
     match system.process(pid) {
         None => Err(format!(
@@ -244,7 +263,10 @@ pub(crate) fn probe(
                 } else {
                     &actual_command_line[0]
                 }
-            };
+            }
+            .to_str()
+            .unwrap();
+
             // It appears that the daemon only records a prefix of the process name, so we just check that.
             if actual_argv0.starts_with(&expected_process_name_prefix) {
                 Ok(port)
@@ -252,7 +274,7 @@ pub(crate) fn probe(
                 Err(format!(
                     "\
           The process with pid {pid} is not pantsd. Expected a process name matching \
-          {expected_process_name_prefix} but is {actual_argv0}.\
+          {expected_process_name_prefix} but is {actual_argv0:?}.\
           "
                 ))
             }

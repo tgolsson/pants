@@ -10,7 +10,12 @@ use std::fmt;
 use std::fs::File;
 use std::future::Future;
 use std::io::{Read, Write};
+
+#[cfg(not(target_os = "windows"))]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+
+#[cfg(target_os = "windows")]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, RawHandle};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -30,12 +35,32 @@ struct Console {
 }
 
 impl Console {
+	#[cfg(not(target_os="windows"))]
     fn new(stdin_fd: RawFd, stdout_fd: RawFd, stderr_fd: RawFd) -> Console {
+
         let (stdin, stdout, stderr) = unsafe {
             (
                 File::from_raw_fd(stdin_fd),
                 File::from_raw_fd(stdout_fd),
                 File::from_raw_fd(stderr_fd),
+            )
+        };
+
+        Console {
+            stdin_handle: Some(stdin),
+            stdout_handle: Some(stdout),
+            stderr_handle: Some(stderr),
+            stderr_use_color: false,
+        }
+    }
+
+	#[cfg(target_os="windows")]
+    fn new(stdin_handle: RawHandle, stdout_handle: RawHandle, stderr_handle: RawHandle) -> Console {
+        let (stdin, stdout, stderr) = unsafe {
+            (
+                File::from_raw_handle(stdin_handle),
+                File::from_raw_handle(stdout_handle),
+                File::from_raw_handle(stderr_handle),
             )
         };
         Console {
@@ -62,29 +87,66 @@ impl Console {
         stderr.flush()
     }
 
-    fn stdin_as_raw_fd(&self) -> RawFd {
-        self.stdin_handle.as_ref().unwrap().as_raw_fd()
-    }
+
 
     fn stderr_set_use_color(&mut self, use_color: bool) {
         self.stderr_use_color = use_color;
+    }
+
+
+}
+
+#[cfg(not(target_os="windows"))]
+impl Console {
+    fn stdin_as_raw_fd(&self) -> RawFd {
+        self.stdin_handle.as_ref().unwrap().as_raw_fd()
     }
 
     fn stdout_as_raw_fd(&self) -> RawFd {
         self.stdout_handle.as_ref().unwrap().as_raw_fd()
     }
 
+
     fn stderr_as_raw_fd(&self) -> RawFd {
         self.stderr_handle.as_ref().unwrap().as_raw_fd()
     }
 }
 
+
+#[cfg(target_os="windows")]
+impl Console {
+    fn stdin_as_raw_handle(&self) -> RawHandle {
+        self.stdin_handle.as_ref().unwrap().as_raw_handle()
+    }
+
+    fn stdout_as_raw_handle(&self) -> RawHandle {
+        self.stdout_handle.as_ref().unwrap().as_raw_handle()
+    }
+
+
+    fn stderr_as_raw_handle(&self) -> RawHandle {
+        self.stderr_handle.as_ref().unwrap().as_raw_handle()
+    }
+}
+
+#[cfg(not(target_os="windows"))]
 impl Drop for Console {
     fn drop(&mut self) {
         // "Forget" about our file handles without closing them.
         let _ = self.stdin_handle.take().unwrap().into_raw_fd();
         let _ = self.stdout_handle.take().unwrap().into_raw_fd();
         let _ = self.stderr_handle.take().unwrap().into_raw_fd();
+    }
+}
+
+
+#[cfg(target_os="windows")]
+impl Drop for Console {
+    fn drop(&mut self) {
+        // "Forget" about our file handles without closing them.
+        let _ = self.stdin_handle.take().unwrap().into_raw_handle();
+        let _ = self.stdout_handle.take().unwrap().into_raw_handle();
+        let _ = self.stderr_handle.take().unwrap().into_raw_handle();
     }
 }
 
@@ -333,6 +395,10 @@ impl Destination {
         self.write_stderr(content);
     }
 
+}
+
+#[cfg(not(target_os="windows"))]
+impl Destination {
     ///
     /// If stdin is backed by a real file, returns it as a RawFd. All usage of `RawFd` is unsafe,
     /// but this method is additionally unsafe because the real file might have been closed by the
@@ -385,6 +451,61 @@ impl Destination {
     }
 }
 
+
+#[cfg(target_os="windows")]
+impl Destination {
+    ///
+    /// If stdin is backed by a real file, returns it as a RawHandle. All usage of `RawHandle` is unsafe,
+    /// but this method is additionally unsafe because the real file might have been closed by the
+    /// time the caller interacts with it.
+    ///
+    pub fn stdin_as_raw_handle(&self) -> Result<RawHandle, String> {
+        match &*self.0.lock() {
+      InnerDestination::Console(console) => Ok(console.stdin_as_raw_handle()),
+      InnerDestination::Logging => {
+        Err("No associated file descriptor for the Logging destination".to_owned())
+      }
+      InnerDestination::Exclusive { .. } => {
+        Err("A UI or process has exclusive access, and must be stopped before stdio is directly accessible.".to_owned())
+      }
+    }
+    }
+
+    ///
+    /// If stdout is backed by a real file, returns it as a RawHandle. All usage of `RawHandle` is unsafe,
+    /// but this method is additionally unsafe because the real file might have been closed by the
+    /// time the caller interacts with it.
+    ///
+    pub fn stdout_as_raw_handle(&self) -> Result<RawHandle, String> {
+        match &*self.0.lock() {
+      InnerDestination::Console(console) => Ok(console.stdout_as_raw_handle()),
+      InnerDestination::Logging => {
+        Err("No associated file descriptor for the Logging destination".to_owned())
+      }
+      InnerDestination::Exclusive { .. } => {
+        Err("A UI or process has exclusive access, and must be stopped before stdio is directly accessible.".to_owned())
+      }
+    }
+    }
+
+    ///
+    /// If stdout is backed by a real file, returns it as a RawHandle. All usage of `RawHandle` is unsafe,
+    /// but this method is additionally unsafe because the real file might have been closed by the
+    /// time the caller interacts with it.
+    ///
+    pub fn stderr_as_raw_handle(&self) -> Result<RawHandle, String> {
+        match &*self.0.lock() {
+      InnerDestination::Console(console) => Ok(console.stderr_as_raw_handle()),
+      InnerDestination::Logging => {
+        Err("No associated file descriptor for the Logging destination".to_owned())
+      }
+      InnerDestination::Exclusive { .. } => {
+        Err("A UI or process has exclusive access, and must be stopped before stdio is directly accessible.".to_owned())
+      }
+    }
+    }
+}
+
 thread_local! {
   ///
   /// See set_thread_destination.
@@ -403,6 +524,7 @@ task_local! {
 /// Creates a Console that borrows the given file handles, and which can be set for a Thread
 /// using `set_thread_destination`.
 ///
+#[cfg(not(target_os="windows"))]
 pub fn new_console_destination(
     stdin_fd: RawFd,
     stdout_fd: RawFd,
@@ -410,6 +532,22 @@ pub fn new_console_destination(
 ) -> Arc<Destination> {
     Arc::new(Destination(Mutex::new(InnerDestination::Console(
         Console::new(stdin_fd, stdout_fd, stderr_fd),
+    ))))
+}
+
+
+///
+/// Creates a Console that borrows the given file handles, and which can be set for a Thread
+/// using `set_thread_destination`.
+///
+#[cfg(target_os="windows")]
+pub fn new_console_destination(
+    stdin_handle: RawHandle,
+    stdout_handle: RawHandle,
+    stderr_handle: RawHandle,
+) -> Arc<Destination> {
+    Arc::new(Destination(Mutex::new(InnerDestination::Console(
+        Console::new(stdin_handle, stdout_handle, stderr_handle),
     ))))
 }
 

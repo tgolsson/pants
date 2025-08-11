@@ -2,7 +2,11 @@
 // Licensed under the Apache License, Version 2.0 (see LICENSE).
 use std::fs::File;
 use std::io::{Read, Write};
+#[cfg(not(target_os = "windows"))]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+
+#[cfg(target_os = "windows")]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, RawHandle};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -68,9 +72,22 @@ impl Read for TermReadDestination {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 impl AsRawFd for TermReadDestination {
     fn as_raw_fd(&self) -> RawFd {
         self.0.console.lock().as_ref().unwrap().stdin_as_raw_fd()
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl AsRawHandle for TermReadDestination {
+    fn as_raw_handle(&self) -> RawHandle {
+        self.0
+            .console
+            .lock()
+            .as_ref()
+            .unwrap()
+            .stdin_as_raw_handle()
     }
 }
 
@@ -99,6 +116,7 @@ impl Write for TermWriteDestination {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 impl AsRawFd for TermWriteDestination {
     fn as_raw_fd(&self) -> RawFd {
         if self.is_stderr {
@@ -115,6 +133,27 @@ impl AsRawFd for TermWriteDestination {
                 .as_ref()
                 .unwrap()
                 .stdout_as_raw_fd()
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl AsRawHandle for TermWriteDestination {
+    fn as_raw_handle(&self) -> RawHandle {
+        if self.is_stderr {
+            self.destination
+                .console
+                .lock()
+                .as_ref()
+                .unwrap()
+                .stderr_as_raw_handle()
+        } else {
+            self.destination
+                .console
+                .lock()
+                .as_ref()
+                .unwrap()
+                .stdout_as_raw_handle()
         }
     }
 }
@@ -136,6 +175,7 @@ pub trait TryCloneAsFile {
     fn try_clone_as_file(&self) -> std::io::Result<File>;
 }
 
+#[cfg(not(target_os = "windows"))]
 impl<T: AsRawFd> TryCloneAsFile for T {
     fn try_clone_as_file(&self) -> std::io::Result<File> {
         let raw_fd = self.as_raw_fd();
@@ -144,6 +184,20 @@ impl<T: AsRawFd> TryCloneAsFile for T {
             let cloned = underlying_file.try_clone()?;
             // Drop the temporarily materialized file now that we've duped it.
             let _ = underlying_file.into_raw_fd();
+            Ok(cloned)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl<T: AsRawHandle> TryCloneAsFile for T {
+    fn try_clone_as_file(&self) -> std::io::Result<File> {
+        let raw_handle = self.as_raw_handle();
+        unsafe {
+            let underlying_file = File::from_raw_handle(raw_handle);
+            let cloned = underlying_file.try_clone()?;
+            // Drop the temporarily materialized file now that we've duped it.
+            let _ = underlying_file.into_raw_handle();
             Ok(cloned)
         }
     }

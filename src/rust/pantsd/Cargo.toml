@@ -13,6 +13,8 @@ options = { path = "../options" }
 sha2 = { workspace = true }
 sysinfo = { workspace = true }
 tempfile = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
 uname = { workspace = true }
 
 [lints]

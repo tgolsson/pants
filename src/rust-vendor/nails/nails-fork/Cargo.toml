@@ -1,0 +1,20 @@
+[package]
+name = "nails-fork"
+version = "0.13.0"
+authors = ["Stu Hood <stuhood@gmail.com>"]
+license = "Apache-2.0"
+readme = "../README.md"
+repository = "https://github.com/stuhood/nails"
+homepage = "https://github.com/stuhood/nails"
+description = """
+A `Nail` trait implementation that forks a process as the user running the server.
+"""
+edition = "2018"
+
+[dependencies]
+bytes = "1.0"
+futures = "0.3"
+log = "0.4"
+nails = { path = "../nails", version = "=0.13.0" }
+tokio = { version = "1.18", features = ["macros", "process", "rt"] }
+tokio-util = { version = "0.6", features = ["codec"] }

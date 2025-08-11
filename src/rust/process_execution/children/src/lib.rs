@@ -4,9 +4,8 @@
 use std::ops::{Deref, DerefMut};
 use std::{thread, time};
 
-use nix::sys::signal;
-use nix::unistd::Pid;
-use nix::unistd::getpgid;
+#[cfg(not(target_os = "windows"))]
+use nix::{sys::signal, unistd::getpgid, unistd::Pid};
 use tokio::process::{Child, Command};
 
 const GRACEFUL_SHUTDOWN_POLL_TIME: time::Duration = time::Duration::from_millis(50);
@@ -37,6 +36,7 @@ impl ManagedChild {
 
         // Adjust the Command to create its own PGID as it starts, to make it safe to kill the PGID
         // later.
+        #[cfg(not(target_os = "windows"))]
         unsafe {
             command.pre_exec(|| {
                 nix::unistd::setsid()
@@ -45,6 +45,12 @@ impl ManagedChild {
             });
         };
 
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        #[cfg(target_os = "windows")]
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+
         // Then spawn.
         let child = command.spawn()?;
         Ok(Self {
@@ -52,22 +58,6 @@ impl ManagedChild {
             graceful_shutdown_timeout,
             killed: false,
         })
-    }
-
-    fn get_pgid(&self) -> Result<Pid, String> {
-        let pid = self.id().ok_or_else(|| "Process had no PID.".to_owned())?;
-        let pgid = getpgid(Some(Pid::from_raw(pid as i32)))
-            .map_err(|e| format!("Could not get process group id of child process: {e}"))?;
-        Ok(pgid)
-    }
-
-    /// Send a signal to the child process group.
-    fn signal_pg<T: Into<Option<signal::Signal>>>(&mut self, signal: T) -> Result<(), String> {
-        let pgid = self.get_pgid()?;
-        // the negative PGID will signal the entire process group.
-        signal::kill(Pid::from_raw(-pgid.as_raw()), signal)
-            .map_err(|e| format!("Failed to interrupt child process group: {e}"))?;
-        Ok(())
     }
 
     /// Check if the child has exited.
@@ -107,6 +97,25 @@ impl ManagedChild {
         }
         // If we get here we have timed-out.
         Ok(false)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl ManagedChild {
+    fn get_pgid(&self) -> Result<Pid, String> {
+        let pid = self.id().ok_or_else(|| "Process had no PID.".to_owned())?;
+        let pgid = getpgid(Some(Pid::from_raw(pid as i32)))
+            .map_err(|e| format!("Could not get process group id of child process: {e}"))?;
+        Ok(pgid)
+    }
+
+    /// Send a signal to the child process group.
+    fn signal_pg<T: Into<Option<signal::Signal>>>(&mut self, signal: T) -> Result<(), String> {
+        let pgid = self.get_pgid()?;
+        // the negative PGID will signal the entire process group.
+        signal::kill(Pid::from_raw(-pgid.as_raw()), signal)
+            .map_err(|e| format!("Failed to interrupt child process group: {e}"))?;
+        Ok(())
     }
 
     /// Attempt to shutdown the process (gracefully, if was configured that way at creation).
@@ -155,6 +164,16 @@ impl ManagedChild {
         // because we are its parent process, and we are still alive).
         let _ = self.wait_for_child_exit_sync(time::Duration::from_secs(1800))?;
         self.killed = true;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl ManagedChild {
+    pub fn attempt_shutdown_sync(&mut self) -> Result<(), String> {
+        let _ = self.wait_for_child_exit_sync(
+            GRACEFUL_SHUTDOWN_POLL_TIME + self.graceful_shutdown_timeout.unwrap(),
+        )?;
         Ok(())
     }
 }
